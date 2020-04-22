@@ -1,0 +1,3 @@
+GetProportions <- function(expDat,levelAnnot){
+    
+}

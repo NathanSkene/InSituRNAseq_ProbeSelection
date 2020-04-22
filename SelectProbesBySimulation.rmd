@@ -1,0 +1,456 @@
+---
+title: "SelectProbesBySimulation"
+author: "Nathan Gerald Skene"
+date: "11 July 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load the scripts
+
+```{r }
+source("R/SelectGeneSet.r")
+source("R/GetGeneSetOptions.r")
+source("R/GetLowerAnnotGroups.r")
+source("R/CheckGeneSetProportions.r")
+source("R/GetTrainingAndTestSets.r")
+source("R/GetPredictionError.r")
+source("R/plotOptI.r")
+source("R/plotGeneSet.r")
+#source("GeneSetSummary.r")
+source("R/SetLevels.r")
+source("R/LoadExpData.r")
+source("R/GetMeans.r")
+source("R/SelectCandidates.r")
+source("R/SelectCandidatesForPairs.r")
+```
+
+## Prepare the data and celltype level annotations
+
+We will use the read count expression data, with multiples cells per class. And then annotated these with multiple levels.
+
+The data is structured such that $cellNames is an array of cell type names, equal in length to the number of columns in $readCounts.
+
+```{r }
+# Load the read counts
+expDat = LoadExpData()
+
+# Check the data
+print(expDat$cellNames[1:3])
+print(expDat$readCounts[1:4,1:6])
+```
+
+The manner in which probes are selected assumes that you have mapped out a heirarchical tree across which the cell types are distibuted, i.e. Int16 is a subtype of interneuron, which is a subtype of neuron.
+
+The SetLevels() function is specifically designed for this dataset. It can have an arbitrary number of levels. 
+
+levels[[1]]$annot would have an entry for each cell in expData$readCounts, the entry for each cell would be something like either 'Neurons' or 'Glia'.
+
+Some cell types may be divided into many layers, others might only be considered 'glia' and not subdivided further. In which case, at higher levels just enter them as '-'.
+
+```{r }
+# Setup level annotations
+levels = SetLevels(expDat$cellNames)
+```
+
+## Find means & proportions for each level
+
+To find candidate genes for each level, we will find the mean level of expression within each group, and the proportion of expression within that group (relative only to the cells in the level below).
+
+```{r }
+for(targLevel in 1:length(levels)){
+#for(targLevel in 4){
+    # Get the means, proportions etc
+    levels[[targLevel]]$stats = GetMeans(expDat,annot=levels[[targLevel]]$annot)
+    
+    # Select candidate genes
+    count=0
+    for(target in setdiff(unique(levels[[targLevel]]$annot),"-")){
+        count=count+1
+        
+        # Enforce constraints on candidates
+        gMeans = levels[[targLevel]]$stats$groupMeans#groupMedians#$groupMeans
+        props  = levels[[targLevel]]$stats$proportions
+        a      = levels[[targLevel]]$annot
+        if(targLevel==1){a0 = NA}else{a0 = levels[[targLevel-1]]$annot}
+        # target=target
+        # groupMeans=gMeans
+        # proportions=props
+        # annot=a
+        # annotBelow=a0
+        # numCandidates=40
+        #candidates = SelectCandidates(target=target,groupMeans=gMeans,proportions=props,annot=a,annotBelow=a0,numCandidates=20)
+        candidates = SelectCandidatesForPairs(target=target,groupMeans=gMeans,proportions=props,annot=a,annotBelow=a0,numCandidates=3)
+        print(candidates)
+        
+        if(!is.na(candidates)){
+            if(count==1){allCandidates=candidates}
+            else{allCandidates=rbind(allCandidates,candidates)}
+        }
+    }
+    levels[[targLevel]]$candidates=allCandidates
+}
+```
+
+# Get a table with all candidates
+```{r }
+allCands = levels[[1]]$candidates
+for(i in 2:6){
+    allCands = rbind(allCands,levels[[i]]$candidates)
+}
+write.csv(allCands,file="allCands.csv")
+```
+
+## I manually annotated allCands.csv with a "Decision" column...
+## Then Kenneth and I discussed the output of the prior linear model method..
+## Then kenneth added a few extra
+```{r }
+myProbes = read.csv("/Users/ns9/Google Drive/In Situ Probe Selection/allCands_manuallyAnnotated.csv",stringsAsFactors = FALSE)
+myProbes = myProbes[myProbes$Decision=="Buy",]
+disProbes = read.csv("/Users/ns9/Google Drive/In Situ Probe Selection/Post_Discussion_Probelist.csv",stringsAsFactors = FALSE)
+disProbes = disProbes[disProbes$Decision=="Buy",]
+
+howManyGenes = unique(c(myProbes$genes,disProbes$symbols))
+
+# How many of the genes are:
+# - In the new gene list
+# - Not in the triplet gene list
+# - Not previously suggested by Kenneth
+NotInTriplet = setdiff(myProbes$genes,unique(disProbes$symbols))
+NotSuggested = NotInTriplet[!NotInTriplet %in% kenneths$GENE]
+myProbes[myProbes$genes %in% NotSuggested,]
+
+as.character(kenneths$GENE)
+```
+
+
+## For each level, find each combination of markers that could be used
+
+```{r }
+save(levels,expDat,file=sprintf("dataForServer-%s.rda",gsub(':|-', '_', Sys.time())))
+library(combinat)
+library(reshape2)
+numPerLevel=3
+count=0
+for(targLevel in 1:length(levels)){
+    
+    # For each "group" find the three genes which perform best
+    for(g in unique(levels[[targLevel]]$annot)){
+        count=count+1
+        print(sprintf("%s - %s - %s",count,targLevel,g))
+        #print(g)
+    }
+}
+        
+        output = SelectGeneSet(target=g,targLevel=targLevel,levels=levels,readCounts=expDat$readCounts)
+        
+        if(g==unique(levels[[targLevel]]$annot)[1]){
+            levels[[targLevel]]$selectedMarkers=output$selectedMarkers
+            levels[[targLevel]]$marker_stats=output$GeneSetSummary
+        }else{
+            levels[[targLevel]]$selectedMarkers=rbind(levels[[targLevel]]$selectedMarkers,output$selectedMarkers)
+            levels[[targLevel]]$marker_stats=rbind(levels[[targLevel]]$marker_stats,output$GeneSetSummary)
+        }
+    }
+}
+
+save(levels,file=sprintf("levels-%s.rda",gsub(':|-', '_', Sys.time())))
+```
+
+## Script for the server
+
+Created a folder at /nfs/team156/ns9/In Situ Probe Selection/
+
+Put below script in 'runSelection.r'
+
+```{r }
+load(file="dataForServer-2016_07_15 14_13_54.rda")
+library(combinat)
+library(reshape2)
+library(ggplot2)
+numPerLevel=3
+
+source("SelectGeneSet.r")
+source("GetGeneSetOptions.r")
+source("GetLowerAnnotGroups.r")
+source("CheckGeneSetProportions.r")
+source("GetTrainingAndTestSets.r")
+source("GetPredictionError.r")
+source("plotOptI.r")
+source("GeneSetSummary.r")
+#source(".r")
+
+
+for(targLevel in 1:length(levels)){
+    
+    # For each "group" find the three genes which perform best
+    for(g in unique(levels[[targLevel]]$annot)){
+         output = SelectGeneSet(target=g,targLevel=targLevel,levels=levels,readCounts=expDat$readCounts)
+         save(output,file=sprintf("%s---%s.rda",targLevel,g))
+    }
+}
+
+```
+
+The selection of the final set of genes does not weight by expression level.
+
+```{r }
+targLevel=2
+target="Pyramidal"
+
+load(sprintf("/Users/ns9/Google Drive/In Situ Probe Selection/Server Output/%s---%s.rda",targLevel,target))
+output$GeneSetSummary[1:10,]
+newOut=data.frame()
+for(i in 1:50){
+    rowGenes = as.character(unlist(output$GeneSetSummary[i,2:4]))
+    expLevel = levels[[targLevel]]$stats$groupMedians[rowGenes,target]
+    tmp = cbind(output$GeneSetSummary[i,],exp1=expLevel[1],exp2=expLevel[2],exp3=expLevel[3])
+    newOut=rbind(newOut,tmp)
+}
+```
+
+Load markers we already have
+
+```{r }
+curMarkers = read.csv(file="/Users/ns9/Google Drive/In Situ Analysis/Analysis of probe results in cells.csv")
+currently_used_Genes = as.character(curMarkers$genes)
+```
+
+Get list of all selected markers:
+
+```{r }
+markerSet = data.frame()
+originalMarkerSet = data.frame()
+for(targLevel in 1:length(levels)){
+    targets = as.character(unique(levels[[targLevel]]$candidates[,1]))
+    for(target in targets){
+        load(sprintf("/Users/ns9/Google Drive/In Situ Probe Selection/Server Output v2/%s---%s.rda",targLevel,target))    
+        
+        # If any bad genes got through, drop them
+        bad_genes = "Xist"
+        output$GeneSetSummary = output$GeneSetSummary[!output$GeneSetSummary$g1 %in% bad_genes,]
+        output$GeneSetSummary = output$GeneSetSummary[!output$GeneSetSummary$g2 %in% bad_genes,]
+        output$GeneSetSummary = output$GeneSetSummary[!output$GeneSetSummary$g3 %in% bad_genes,]
+        
+        # Search for the highest expressed amongst the top 200th
+        # - numEval is the number of top options to try (top 200th)
+        numEval = round(dim(output$GeneSetSummary)[1]/200)       
+        if(numEval<1){numEval=1}
+        # - Instead of arbitary cutoff, expand numEval if neighbouring samples also have equivilent FPos+FNeg
+        numEval = sum(apply(output$GeneSetSummary[,c("FPos","FNeg")],1,sum)<=sum(output$GeneSetSummary[numEval,c("FPos","FNeg")]))
+        mGenes = output$GeneSetSummary[1:numEval,2:4]
+        possMarkers = unique(as.character(unlist(mGenes)))
+        mExp = matrix(0,dim(mGenes)[1],dim(mGenes)[2])
+        for(i in 1:dim(mGenes)[1]){mExp[i,]=levels[[targLevel]]$stats$groupMedians[as.character(unlist(mGenes[i,])),target]}
+        minExp = apply(mExp,1,min)
+        useCands = 1
+        for(i in 1:dim(mGenes)[1]){
+            if(minExp[useCands]<10){
+                if(minExp[useCands]<minExp[i]){useCands=i}
+            }
+        }
+        
+        print(sprintf("Level %s - %s",targLevel,target))
+        print(output$GeneSetSummary[c(1,useCands),c("FPos","FNeg")])
+        
+        if(target=="Htr3a Vip+ - Int10"){store_tmp = originalMarkerSet}
+        
+        # Check if any of the top candidate genesets are ones we already have
+        numCands = rep(0,numEval)
+        for(jj in 1:numEval){
+            cands = as.character(unlist(output$GeneSetSummary[jj,2:4]))
+            curGenes = unique(c(currently_used_Genes,as.character(originalMarkerSet$symbols)))
+            numCands[jj] = sum(cands %in% curGenes)
+        }
+        if(sum(numCands)>=1){
+            #useWhich = which.max(minExp[numCands==max(numCands)])
+            useWhich = which.max(minExp[numCands>0])
+            useCands=which(numCands>0)[useWhich]
+        }
+        
+        print(useCands)
+        originalThree = as.character(unlist(output$GeneSetSummary[useCands,2:4]))
+        
+        # Force usage of specific marker sets
+        if(target=="Interneurons"){originalThree = c("Gad1","Cnr1","Slc6a1")}
+        if(target=="Htr3a Vip+ - Int10"){originalThree = c("Crh","Penk","Klhl13")}
+        
+        # Plot the marker set
+        annotGroups=GetLowerAnnotGroups(target,targLevel,levels)
+        rC=expDat$readCounts
+        annot=levels[[targLevel]]$annot
+        a0=annotGroups$annotBelow
+        pdf(file=sprintf("FinalMarkerPlots/MarkerPlot-Level%s-%s.pdf",targLevel,target),width=8,height=4)
+        plotGeneSet(geneSet=originalThree,target=target,readCounts=rC,annot=annot,annotBelow=a0)
+        dev.off()
+        
+        g_exp = levels[[targLevel]]$stats$groupMedians[originalThree,target]
+        # addThree = originalThree
+        # addThree = setdiff(addThree,markerSet$symbols)
+        # j=1
+        # while(length(addThree)<3){
+        #     j=j+1
+        #     nextThree = as.character(unlist(output$GeneSetSummary[j,2:4]))
+        #     nextThree = setdiff(nextThree,markerSet$symbols)
+        #     originalThree = c(originalThree,intersect(nextThree,markerSet$symbols))
+        #     nextThree = setdiff(nextThree,addThree)
+        #     if(length(nextThree)>1){
+        #         expLevels = levels[[targLevel]]$stats$groupMedians[nextThree,target]
+        #         mostExpressed = names(sort(expLevels,decreasing=TRUE)[1])
+        #         addThree = c(addThree,mostExpressed)
+        #     }
+        #     if(length(nextThree)==1){
+        #         addThree = c(addThree,nextThree)
+        #     }
+        # }
+        # addThree = addThree[!is.na(addThree)]
+        # allMarkers = unique(c(originalThree,addThree))
+        # tmp = data.frame(symbols=allMarkers,target=target,level=targLevel)
+        tmpO = data.frame(symbols=originalThree,target=target,level=targLevel)#,t(unlist(g_exp)))
+        tmpO = cbind(tmpO,MedianExpression_inTarget = g_exp)
+        # print(dim(tmp)[1])
+        # markerSet = rbind(markerSet,tmp)
+        originalMarkerSet = rbind(originalMarkerSet,tmpO)
+    }
+}
+
+# Drop annotation levels we're not currently planning to use
+drop_list = c("Oligodendrocytes","Microglia","Other","Astrocytes","Htr3a Vip+ - Int6","Htr3a Vip+ - Int9","Htr3a Vip+ - Int10","Htr3a Vip- Ivy NGF Int13","Htr3a Vip- Ivy NGF Int14","Htr3a Vip- Ivy NGF Int15 + 16")
+targetMarkerSet = originalMarkerSet[!originalMarkerSet$target %in% drop_list,]
+
+unique_genes = as.character(unique(targetMarkerSet$symbols))
+total_unique_genes = length(unique_genes)
+print(total_unique_genes)
+sum(unique_genes %in% kenneths$GENE)
+sum(unique_genes %in% currently_used_Genes)
+kenNew = setdiff(kenneths$GENE,currently_used_Genes)
+sum(unique_genes %in% kenNew)
+
+write.csv(originalMarkerSet,file="originalMarkerSet.csv")
+write.csv(targetMarkerSet,file="targetMarkerSet.csv")
+
+median(originalMarkerSet$MedianExpression_inTarget)
+min(originalMarkerSet$MedianExpression_inTarget)
+ggplot(originalMarkerSet)+geom_histogram(aes(x=MedianExpression_inTarget))+scale_x_log10()
+```
+
+Find maximum median expression for a given gene over all levels of annotation. Just to help in writing the explanation.
+
+```{r }
+gene="Gad1"
+maxMedian=0
+for(targLevel in 1:length(levels)){
+    targets = as.character(unique(levels[[targLevel]]$candidates[,1]))
+    for(target in targets){
+         curMax = max(levels[[targLevel]]$stats$groupMedians[gene,])
+         if(curMax>maxMedian){maxMedian=curMax}
+    }
+}
+maxMedian
+```
+
+Select how many probes to use. Requires importing how many probes we have already.
+
+```{r }
+load(file="/Users/ns9/Google Drive/In Situ Analysis/res2.rda")
+colnames(res2)[1] = "symbols"
+mSets = merge(targetMarkerSet,res2,by="symbols",all.x=TRUE)
+mSets$nProbes[is.na(mSets$nProbes)]=0
+mSets = mSets[,c(1,2,3,4,6)]
+mSets$curProbes=mSets$nProbes
+
+#gSym = as.character(unique(mSets$symbols))
+minExp = aggregate(mSets$MedianExpression_inTarget,by=list(mSets$symbols),FUN=min)
+colnames(minExp)=c("symbols","MedianExpression_inTarget")
+nP = aggregate(mSets$nProbes,by=list(mSets$symbols),FUN=min)
+colnames(nP)=c("symbols","numProbes")
+combined = merge(nP,minExp,by="symbols")
+combined$curProbes = combined$numProbes
+combined$numProbes[combined$numProbes==0]=2
+
+## Selective add probes where I want them
+combined[combined$symbols=="Gad1","numProbes"]=6
+combined[combined$symbols=="Slc6a1","numProbes"]=10
+
+## Add new probes in a greedy manner
+combined$num_probes_to_order = combined$numProbes - combined$curProbes
+while(sum(combined$num_probes_to_order)<96){
+    combined$multiple = combined$MedianExpression_inTarget*combined$numProbes
+    combined=combined[order(combined$multiple),]
+    # Restict so only five genes are ordered at most for any one gene
+    addToGene=1
+    for(i in 1:dim(combined)[1]){
+        if(combined$num_probes_to_order[i]<5){
+            addToGene=i
+            break()
+        }
+    }
+    combined$numProbes[addToGene] = combined$numProbes[addToGene]+1
+    combined$num_probes_to_order = combined$numProbes - combined$curProbes
+}
+write.csv(combined,file="ListOfProbes.csv")
+
+# Add the targets back
+combined_wtTarg = merge(combined,targetMarkerSet[,1:2],by="symbols")
+combined_wtTarg=combined_wtTarg[order(combined_wtTarg$multiple),]
+write.csv(combined_wtTarg,file="ListOfProbes_with_targets.csv")
+```
+
+
+Generate plots of mean expression vs proportion
+
+```{r }
+kenneths = read.csv("kenneths_targets.csv")
+ken_genes = unique(c(as.character(kenneths$GENE),res2$symbols))
+
+for(targLevel in 1:length(levels)){
+    targets = as.character(unique(levels[[targLevel]]$candidates[,1]))
+    for(target in targets){
+
+        # Get genes selected for this
+        targGenes = as.character(originalMarkerSet[originalMarkerSet$target==target,"symbols"])
+        targGenesStr = paste(targGenes,collapse=", ")
+        titleStr = sprintf("%s      (%s)",target,targGenesStr)
+        
+        medianExp = levels[[targLevel]]$stats$groupMedians[,target]
+        
+        # Adjust proportions to only relate to the annotation level below
+        if(targLevel>1){
+            annotGroups=GetLowerAnnotGroups(target,targLevel,levels)
+            annot=levels[[targLevel]]$annot
+            a0=annotGroups$annotBelow        
+            a0_targ = a0[annot==target][1]
+            use_groups = unique(annot[a0==a0_targ])
+            props = levels[[targLevel]]$stats$proportions[,use_groups]
+            props2 = props/(apply(props,1,sum)+0.00000001)
+            proportion = props2[,target]
+        }else{
+            proportion = levels[[targLevel]]$stats$proportions[,target]
+        }
+        
+        combined = data.frame(symbols = names(proportion),proportion=proportion,median=medianExp)
+        combined$isKenneths = combined$symbols  %in% ken_genes
+        combined$isMine = 7.5
+        combined$isMine[combined$symbols  %in% originalMarkerSet$symbols] = 10
+        combined$whose = "Not Selected"
+        isK=combined$symbols  %in% ken_genes
+        isM=combined$symbols  %in% originalMarkerSet$symbols
+        combined$whose[isM] = "Mine"
+        combined$whose[isK] = "Kenneths"
+        combined$whose[isK & isM] = "Both"
+        
+        #allGenes$isKenneths = allGenes$gene %in% kenneths$GENE
+        
+        pdf(file=sprintf("Mean_vs_Prop/Mean_vs_Prop---Level%s---%s.pdf",targLevel,target),width=16,height=14)
+        print(ggplot(combined)+geom_text(aes(x=proportion,y=median,colour=whose,label=symbols))+scale_y_log10()+ggtitle(titleStr))
+        dev.off()
+    }
+}
+
+#ggplot(combined)+geom_text(aes(x=proportion_median,y=median,colour=isKenneths,label=gene))+scale_y_log10()
+
+ggplot(combined) + geom_text(aes(x=median,y=proportion))
+```
